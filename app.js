@@ -1,9 +1,10 @@
 var config = require('./config.json');
+var mkdirp = require('mkdirp')
 
 var pathPhotos = config.pathPhotos;
 var previewWidth = config.previewWidth;
 var previewHeight = config.previewHeight;
-var cardPath = null;
+var cardPath = config.cardPath;
 var pathPreviews = './public/previews';
 
 var itvPing = null;
@@ -25,6 +26,7 @@ var favicon = require('serve-favicon');
 var logger = require('morgan');
 var cookieParser = require('cookie-parser');
 var bodyParser = require('body-parser');
+var exec = require('child_process').exec
 
 var express = require('express');
 var app = express();
@@ -41,6 +43,8 @@ var cardAddr = ip.subnet(ip.address(), '255.255.255.0').broadcastAddress;
 if (typeof config.broadcastAddr !== undefined) {
   cardAddr = config.broadcastAddr;
 }
+
+mkdirp(config.pathTempPhotos)
 
 process.title = 'WiPho';
 var gracefulShutdown = function() {
@@ -138,11 +142,12 @@ function downloadPhotos() {
     
   alreadyDownloading = true;
   var photo = downloadList.pop();
-  var localFile = pathPhotos+'/'+photo;
+  //var localFile = pathPhotos+'/'+photo;
+  var localTempFile = config.pathTempPhotos + '/' + photo;
   var localPreview = pathPreviews+'/'+photo;
   console.log('['+photo+'] Downloading from http://'+cardAddr+cardPath+'/'+photo);
   
-  var file = fs.createWriteStream(localFile);
+  var file = fs.createWriteStream(localTempFile);
     
   file.on('error', function(err) {
     console.log("FS: "+err);
@@ -150,33 +155,42 @@ function downloadPhotos() {
   
   file.on('finish', function() {
     file.close();
+    var localFile = pathPhotos+'/'+photo;
     alreadyDownloading = false;
-    console.log('['+photo+'] Saved as '+localFile);
-    
-    gm(localFile).autoOrient().resize(previewWidth, previewHeight).write(localPreview, function (err) {
-      if (!err) {
-        console.log('['+photo+'] Resized to '+previewWidth+'x'+previewHeight);            
-        if(photos.length == 0 || photo != photos[photos.length-1].name) {
-          photos.push({id: photoIndex, name: photo});
-          photoIndex++;
-          io.emit('photo', { path: photo });
-        }
-      
-      }else{
-        console.log('Photo resize error: '+err);
-      }
-      
-    });
+    exec('mv ' + localTempFile + ' ' + localFile, function (err) {
+      if (err) {
+        console.log(err)
+      } else {
+        console.log('['+photo+'] Saved as '+localFile);
+        
+        /*
+        gm(localFile).autoOrient().resize(previewWidth, previewHeight).write(localPreview, function (err) {
+          if (!err) {
+            console.log('['+photo+'] Resized to '+previewWidth+'x'+previewHeight);            
+            if(photos.length == 0 || photo != photos[photos.length-1].name) {
+              photos.push({id: photoIndex, name: photo});
+              photoIndex++;
+              io.emit('photo', { path: photo });
+            }
+          
+          }else{
+            console.log('Photo resize error: '+err);
+          }
+          
+        });
+        */
 
-    if(downloadPrevious == true) {
-      getPhotoList();
-    }
-    
-    if(downloadList.length > 0) {
-      downloadPhotos();
-    }else{
-      console.log("All photos downloaded, waiting for new ones...");
-    }
+        if(downloadPrevious == true) {
+          getPhotoList();
+        }
+        
+        if(downloadList.length > 0) {
+          downloadPhotos();
+        }else{
+          console.log("All photos downloaded, waiting for new ones...");
+        }
+      }
+    })
     
   });
   
@@ -206,11 +220,18 @@ function getPhotoList() {
     port: 80,
     path: '/cgi-bin/tslist?PATH=/www'+cardPath+'&keepfresh='+Date.now().toString()
   };
+  console.log("Requesting list of photos on card...");
 
   http.get(options, function(resp){
     console.log("Getting list of photos on card...");
-    resp.on('data', function(data){
-      var strFiles = data.toString().split(os.EOL)[2];
+    rawData = ''
+    resp.on('data', function(chunk){
+      rawData += chunk;
+    });
+    resp.on('end', function(){
+      //var strFiles = data.toString().split(os.EOL)[2];
+      var strFiles = rawData.toString()
+      console.log('strFiles: ' + strFiles)
       var regex = /FileName\d+=([a-zA-Z0-9_\.]+)&FileType\d+=File&/g;
       var arrPhotos = new Array();
       while (match = regex.exec(strFiles)) {
@@ -220,7 +241,7 @@ function getPhotoList() {
       arrPhotos.forEach(function(photo) {
         fs.exists(pathPhotos+'/'+photo, function(exists) {
           if (exists) {
-            //console.log('['+photo+'] Photo '+photo+' already downloaded!');
+            console.log('['+photo+'] Photo '+photo+' already downloaded!');
           }else{
             console.log('['+photo+'] Photo '+photo+' not downloaded yet, adding to download list!');
             downloadList.push(photo);
@@ -266,6 +287,7 @@ function enableShootAndView(ip) {
     var path = data.toString().substr(5).replace(/\0/g, '');
     var photo = path.split('/').pop();
     cardPath = path.substring(0, path.lastIndexOf('/'));
+    // console.log('cardPath: ' + cardPath)
     downloadList.push(photo);
     downloadPhotos();
   });
